@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Auto Tab Grouper",
+  "version": "1.0.0",
+  "description": "Automatically groups multiple tabs from the same domain.",
+  "permissions": ["tabs", "tabGroups"],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

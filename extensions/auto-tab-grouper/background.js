@@ -1,26 +1,43 @@
+/**
+ * @typedef {Object} TaskObject
+ * @property {Promise<void>} [active]
+ * @property {boolean} [dirty]
+ */
+
+/**
+ * @typedef {Object} GroupRange
+ * @property {number} startIndex
+ * @property {number} endIndex
+ */
+
+/**
+ * @typedef {chrome.tabs.Tab} Tab
+ * @typedef {chrome.tabGroups.TabGroup} TabGroup
+ * @typedef {Promise<any>[]} PromiseTasks
+ */
+
 const HTTP_PATTERN = /^https?:\/\//;
 const WWW_PATTERN = /^www\./;
-const DELAY_TIMESTAMP = 200;
+
+/** @type {Map<number, TaskObject>} */
+const RUN_TASKS_BY_WINDOW = new Map();
+
+/** @type {Map<number, number>} */
+const RUN_TIMERS_BY_WINDOW = new Map();
 
 /**
- * @type {Map<number, {active?: Promise<void>, dirty?: boolean}>}
- */
-const TASK_MAP = new Map();
-
-/**
- * @param time {number}
- * @return {Promise<void>}
+ * @param {number} [time]
  */
 function sleep(time) {
   return new Promise((resolve) => {
-    setTimeout(resolve, time);
+    setTimeout(resolve, time || 200);
   });
 }
 
 /**
- * @param tab {chrome.tabs.Tab}
+ * @param {Tab} tab
  */
-function filterTab(tab) {
+function isValidTab(tab) {
   if (tab.pinned || (tab.splitViewId && tab.splitViewId !== chrome.tabs.SPLIT_VIEW_ID_NONE)) {
     return false;
   }
@@ -29,202 +46,272 @@ function filterTab(tab) {
 }
 
 /**
- * @param tab {chrome.tabs.Tab}
+ * @param {Tab} tab
  */
-function getTabName(tab) {
+function createGroupName(tab) {
   try {
     return new URL(tab.url).host.replace(WWW_PATTERN, '');
   } catch {
-    return null;
+    return '';
   }
 }
 
 /**
- * @param windowId {number}
+ * @param {number} windowId
+ * @param {string} name
  */
-async function getAllTabs(windowId) {
-  const tabs = await chrome.tabs.query({ windowId });
-  return Map.groupBy(tabs.filter(filterTab), getTabName);
-}
+async function queryGroup(windowId, name) {
+  const tabGroups = await chrome.tabGroups.query({ windowId });
 
-/**
- * @param windowId {number}
- */
-async function getAllGroups(windowId) {
-  const groups = await chrome.tabGroups.query({ windowId });
-  return new Map(groups.map((g) => [g.title, g]));
-}
-
-/**
- * @param title {string}
- * @param tabs {chrome.tabs.Tab[]}
- */
-async function createGroup(title, tabs) {
-  /** @type {number[]} */
-  const tabIds = [];
-
-  /** @type {chrome.tabs.Tab[]} */
-  const normalTabs = [];
-
-  /** @type {chrome.tabs.Tab | null} */
-  let activeTab = null;
-
-  for (const tab of tabs) {
-    tabIds.push(tab.id);
-
-    if (tab.active) {
-      activeTab = tab;
-    } else {
-      if (activeTab) {
-        // Tabs after active tab
-        // [..., ACTIVE, 6, 7, 8]
-        normalTabs.push(tab);
-      } else {
-        // Tabs before active tab
-        // [3, 2, 1, ACTIVE, ...]
-        normalTabs.unshift(tab);
-      }
+  for (const tabGroup of tabGroups) {
+    if (tabGroup.title === name) {
+      return tabGroup;
     }
   }
 
-  if (activeTab) {
-    /** @type {Promise<chrome.tabs.Tab>[]} */
-    const moveTasks = [];
-    const activeTabIndex = activeTab.index;
+  return null;
+}
 
-    let beforeOffset = 0;
-    let afterOffset = 0;
+/**
+ * @param {Tab[]} allTabs
+ * @param {number} groupId
+ * @returns {GroupRange}
+ */
+function getGroupRange(allTabs, groupId) {
+  let startIndex = -1;
+  let endIndex = -1;
 
-    for (const tab of normalTabs) {
-      if (tab.index < activeTabIndex) {
-        beforeOffset += 1;
-
-        moveTasks.push(
-          chrome.tabs.move(tab.id, {
-            index: activeTabIndex - beforeOffset,
-          }),
-        );
-      } else {
-        afterOffset += 1;
-
-        moveTasks.push(
-          chrome.tabs.move(tab.id, {
-            index: activeTabIndex + afterOffset,
-          }),
-        );
+  for (const tab of allTabs) {
+    if (tab.groupId === groupId) {
+      if (startIndex < 0) {
+        startIndex = tab.index;
       }
-    }
 
-    await Promise.all(moveTasks);
-    await sleep(DELAY_TIMESTAMP);
+      endIndex = tab.index;
+    }
   }
 
+  return { startIndex, endIndex };
+}
+
+/**
+ * @param {number} windowId
+ * @param {string} title
+ * @param {Tab[]} tabs
+ */
+async function createGroup(windowId, title, tabs) {
   const groupId = await chrome.tabs.group({
-    tabIds,
+    tabIds: tabs.map((tab) => tab.id),
+    createProperties: {
+      windowId,
+    },
   });
 
   await chrome.tabGroups.update(groupId, {
     title,
   });
-
-  return groupId;
 }
 
 /**
- * @param groupId {number}
- * @param tabs {chrome.tabs.Tab[]}
+ * @param {number} groupId
+ * @param {Tab[]} tabs
  */
 async function updateGroup(groupId, tabs) {
   /** @type {number[]} */
   const tabIds = [];
 
-  let groupStartIndex = -1;
-  let groupEndIndex = -1;
-  let activeTabIndex = -1;
-
   for (const tab of tabs) {
-    if (tab.groupId === groupId) {
-      if (groupStartIndex < 0) {
-        groupStartIndex = tab.index;
-      }
-
-      groupEndIndex = tab.index;
-    } else {
+    if (tab.groupId !== groupId) {
       tabIds.push(tab.id);
-
-      if (tab.active && tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
-        activeTabIndex = tab.index;
-      }
     }
   }
 
   if (tabIds.length > 0) {
-    if (activeTabIndex >= 0) {
-      await chrome.tabGroups.move(groupId, {
-        index:
-          groupStartIndex < activeTabIndex
-            ? activeTabIndex - 1 - (groupEndIndex - groupStartIndex) // Before active tab
-            : activeTabIndex + 1, // After active tab
-      });
+    await chrome.tabs.group({ groupId, tabIds });
+  }
+}
 
-      // Wait for the group movement animation to complete to avoid abrupt flickering.
-      await sleep(DELAY_TIMESTAMP);
-    }
+/**
+ * @param {Tab[]} tabs
+ */
+async function ungroup(tabs) {
+  await Promise.all(
+    tabs.map((tab) => {
+      if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
+        return chrome.tabs.ungroup(tab.id);
+      }
+    }),
+  );
+}
 
-    await chrome.tabs.group({
-      groupId,
-      tabIds,
+/**
+ * @param {number} groupId
+ * @param {number} activeTabIndex
+ * @param {GroupRange} groupRange
+ */
+async function moveGroupCloseToActiveTab(groupId, activeTabIndex, groupRange) {
+  const { startIndex, endIndex } = groupRange;
+
+  // before
+  if (activeTabIndex - endIndex > 1) {
+    await chrome.tabGroups.move(groupId, {
+      index: activeTabIndex - (endIndex - startIndex + 1),
     });
+
+    await sleep();
+  }
+
+  // after
+  else if (startIndex - activeTabIndex > 1) {
+    await chrome.tabGroups.move(groupId, {
+      index: activeTabIndex + 1,
+    });
+
+    await sleep();
   }
 }
 
 /**
- * @param tab {chrome.tabs.Tab}
+ * @param {Tab[]} tabs
+ * @param {number} activeTabIndex
  */
-async function ungroup(tab) {
-  if (tab.groupId && tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
-    await chrome.tabs.ungroup(tab.id);
-  }
-}
-
-/**
- * @param windowId {number}
- */
-async function group(windowId) {
-  const allTabs = await getAllTabs(windowId);
-  const allGroups = await getAllGroups(windowId);
-
-  /** @type {Promise<any>[]} */
+async function moveTabsCloseToActiveTab(tabs, activeTabIndex) {
+  /** @type {PromiseTasks} */
   const tasks = [];
 
-  for (const [name, tabs] of allTabs) {
-    if (!name || tabs.length < 2) {
-      for (const tab of tabs) {
-        tasks.push(ungroup(tab));
-      }
-    } else {
-      const existingGroup = allGroups.get(name);
+  /**
+   * @param {Tab} tab
+   * @param {number} offset
+   */
+  const moveTab = (tab, offset) => {
+    tasks.push(
+      chrome.tabs.move(tab.id, {
+        index: activeTabIndex + offset,
+      }),
+    );
+  };
 
-      if (existingGroup) {
-        tasks.push(updateGroup(existingGroup.id, tabs));
-      } else {
-        tasks.push(createGroup(name, tabs));
+  let offsetBefore = 0;
+  let offsetAfter = 0;
+
+  let reverseIndex = tabs.length;
+
+  while (reverseIndex--) {
+    const tab = tabs[reverseIndex];
+    const distance = tab.index - activeTabIndex;
+
+    if (distance < 0) {
+      offsetBefore--;
+
+      if (distance < offsetBefore) {
+        moveTab(tab, offsetBefore);
       }
     }
   }
 
-  await Promise.all(tasks);
+  for (const tab of tabs) {
+    const distance = tab.index - activeTabIndex;
+
+    if (distance > 0) {
+      offsetAfter++;
+
+      if (distance > offsetAfter) {
+        moveTab(tab, offsetAfter);
+      }
+    }
+  }
+
+  if (tasks.length > 0) {
+    await Promise.all(tasks);
+    await sleep();
+  }
 }
 
 /**
- * @param windowId {number}
+ * @param {number} windowId
+ */
+async function group(windowId) {
+  const allTabs = await chrome.tabs.query({ windowId });
+
+  /**
+   * @type {Map<string, Tab[]>}
+   */
+  const validTabsByName = new Map();
+
+  /**
+   * @param {string} name
+   * @param {Tab[]} tabs
+   * @param {Tab} [activeTab]
+   */
+  const processGroup = async (name, tabs, activeTab) => {
+    if (name && tabs.length > 1) {
+      const group = await queryGroup(windowId, name);
+
+      if (group) {
+        if (activeTab) {
+          await moveGroupCloseToActiveTab(
+            group.id,
+            activeTab.index,
+            getGroupRange(allTabs, group.id),
+          );
+        }
+
+        await updateGroup(group.id, tabs);
+      } else {
+        if (activeTab) {
+          await moveTabsCloseToActiveTab(tabs, activeTab.index);
+        }
+
+        await createGroup(windowId, name, tabs);
+      }
+    } else {
+      await ungroup(tabs);
+    }
+  };
+
+  /** @type {null | (() => Promise<void>)} */
+  let processActiveTab = null;
+
+  for (const tab of allTabs) {
+    if (!isValidTab(tab)) {
+      continue;
+    }
+
+    const groupName = createGroupName(tab);
+    const validTabs = validTabsByName.get(groupName);
+
+    if (validTabs) {
+      validTabs.push(tab);
+    } else {
+      validTabsByName.set(groupName, [tab]);
+    }
+
+    if (tab.active && tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
+      processActiveTab = async () => {
+        await processGroup(groupName, validTabsByName.get(groupName), tab);
+        validTabsByName.delete(groupName);
+      };
+    }
+  }
+
+  if (processActiveTab) {
+    await processActiveTab();
+  }
+
+  for (const [name, tabs] of validTabsByName) {
+    await processGroup(name, tabs);
+  }
+}
+
+/**
+ * @param {number} windowId
  */
 async function run(windowId) {
-  let task = TASK_MAP.get(windowId);
+  let task = RUN_TASKS_BY_WINDOW.get(windowId);
 
   if (!task) {
     task = {};
-    TASK_MAP.set(windowId, task);
+    RUN_TASKS_BY_WINDOW.set(windowId, task);
   }
 
   if (task.active) {
@@ -232,7 +319,7 @@ async function run(windowId) {
   } else {
     task.active = group(windowId)
       .finally(() => {
-        TASK_MAP.delete(windowId);
+        RUN_TASKS_BY_WINDOW.delete(windowId);
       })
       .then(() => {
         if (task.dirty) {
@@ -245,30 +332,28 @@ async function run(windowId) {
 }
 
 /**
- * @param windowId {number}
+ * @param {number} windowId
  */
-async function debounceRun(windowId) {
-  clearTimeout(debounceRun._timer);
-  debounceRun._timer = setTimeout(run, 200, windowId);
+function debounceRun(windowId) {
+  clearTimeout(RUN_TIMERS_BY_WINDOW.get(windowId));
+  RUN_TIMERS_BY_WINDOW.set(windowId, setTimeout(run, 200, windowId));
 }
 
 async function init() {
   const allWindows = await chrome.windows.getAll({
-    windowTypes: ['normal'],
+    windowTypes: [chrome.windows.WindowType.NORMAL],
   });
 
-  for (const win of allWindows) {
-    run(win.id);
-  }
+  return Promise.all(allWindows.map((win) => run(win.id)));
 }
 
 chrome.tabs.onCreated.addListener((tab) => {
-  run(tab.windowId);
+  debounceRun(tab.windowId);
 });
 
 chrome.tabs.onUpdated.addListener((_, info, tab) => {
   if (info.url || info.pinned !== undefined) {
-    run(tab.windowId);
+    debounceRun(tab.windowId);
   }
 });
 

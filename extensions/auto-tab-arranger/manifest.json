@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json.schemastore.org/chrome-manifest.json",
+  "manifest_version": 3,
+  "name": "Auto Tab Arranger",
+  "version": "1.0.0",
+  "description": "Auto arrange multiple tabs from the same domain.",
+  "permissions": ["tabs"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  }
+}

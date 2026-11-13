@@ -36,6 +36,30 @@ function isContiguous(tabs) {
 
 /**
  * @param {Tab[]} tabs
+ */
+function getAnchor(tabs) {
+  let startIndex = 0;
+  let maxStartIndex = 0;
+  let maxLength = 1;
+
+  for (let index = 1; index < tabs.length; index++) {
+    if (tabs[index].index - tabs[index - 1].index > 1) {
+      startIndex = index;
+    }
+
+    const length = index - startIndex + 1;
+
+    if (length > maxLength) {
+      maxStartIndex = startIndex;
+      maxLength = length;
+    }
+  }
+
+  return tabs[maxStartIndex];
+}
+
+/**
+ * @param {Tab[]} tabs
  * @param {Tab} anchor
  */
 function orderTabsForMove(tabs, anchor) {
@@ -148,7 +172,7 @@ async function arrange(windowId, avoidCrossingActiveTab) {
       continue;
     }
 
-    await moveTabs(tabs, tabs.activeTab || tabs[0]);
+    await moveTabs(tabs, tabs.activeTab || getAnchor(tabs));
   }
 }
 

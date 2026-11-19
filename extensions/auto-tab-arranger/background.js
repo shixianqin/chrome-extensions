@@ -120,9 +120,8 @@ async function moveTabs(tabs, anchor) {
 
 /**
  * @param {number} windowId
- * @param {boolean} [avoidCrossingActiveTab]
  */
-async function arrange(windowId, avoidCrossingActiveTab) {
+async function arrange(windowId) {
   const allTabs = await chrome.tabs.query({ windowId });
 
   /** @type {Map<string, Tab[] & { activeTab?: Tab }>} */
@@ -131,6 +130,10 @@ async function arrange(windowId, avoidCrossingActiveTab) {
   let activeTabIndex = -1;
 
   for (const tab of allTabs) {
+    if (tab.active) {
+      activeTabIndex = tab.index;
+    }
+
     if (
       tab.pinned ||
       (tab.splitViewId !== undefined && tab.splitViewId !== chrome.tabs.SPLIT_VIEW_ID_NONE) ||
@@ -156,7 +159,6 @@ async function arrange(windowId, avoidCrossingActiveTab) {
 
     if (tab.active) {
       tabs.activeTab = tab;
-      activeTabIndex = tab.index;
     }
   }
 
@@ -164,8 +166,7 @@ async function arrange(windowId, avoidCrossingActiveTab) {
     if (
       tabs.length < 2 ||
       isContiguous(tabs) ||
-      (avoidCrossingActiveTab &&
-        !tabs.activeTab &&
+      (!tabs.activeTab &&
         tabs[0].index < activeTabIndex &&
         tabs[tabs.length - 1].index > activeTabIndex)
     ) {
@@ -183,16 +184,15 @@ const TASK_BY_WINDOW = new Map();
 
 /**
  * @param {number} windowId
- * @param {boolean} [avoidCrossingActiveTab]
  */
-function schedule(windowId, avoidCrossingActiveTab) {
+function schedule(windowId) {
   let task = TASK_BY_WINDOW.get(windowId);
 
   if (task) {
-    task.next = () => schedule(windowId, avoidCrossingActiveTab);
+    task.next = () => schedule(windowId);
   } else {
     task = {
-      promise: arrange(windowId, avoidCrossingActiveTab)
+      promise: arrange(windowId)
         .finally(() => {
           TASK_BY_WINDOW.delete(windowId);
         })
@@ -207,12 +207,27 @@ function schedule(windowId, avoidCrossingActiveTab) {
   return task.promise;
 }
 
+/**
+ * @type {Map<number, number>}
+ */
+const TIMER_BY_WINDOW = new Map();
+
+/**
+ * @param {number} windowId
+ */
+function debounceSchedule(windowId) {
+  clearTimeout(TIMER_BY_WINDOW.get(windowId));
+  TIMER_BY_WINDOW.set(windowId, setTimeout(schedule, 60, windowId));
+}
+
 async function init() {
   const windows = await chrome.windows.getAll({
     windowTypes: [chrome.windows.WindowType.NORMAL],
   });
 
-  await Promise.all(windows.map((win) => schedule(win.id)));
+  for (const win of windows) {
+    debounceSchedule(win.id);
+  }
 }
 
 chrome.runtime.onStartup.addListener(init);
@@ -220,7 +235,7 @@ chrome.runtime.onInstalled.addListener(init);
 
 chrome.tabs.onCreated.addListener((tab) => {
   if (tab.url) {
-    schedule(tab.windowId);
+    debounceSchedule(tab.windowId);
   }
 });
 
@@ -231,6 +246,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     changeInfo.groupId !== undefined ||
     changeInfo.splitViewId !== undefined
   ) {
-    schedule(tab.windowId, tab.active);
+    debounceSchedule(tab.windowId);
   }
 });

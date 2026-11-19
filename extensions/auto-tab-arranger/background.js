@@ -217,7 +217,7 @@ const TIMER_BY_WINDOW = new Map();
  */
 function debounceSchedule(windowId) {
   clearTimeout(TIMER_BY_WINDOW.get(windowId));
-  TIMER_BY_WINDOW.set(windowId, setTimeout(schedule, 60, windowId));
+  TIMER_BY_WINDOW.set(windowId, setTimeout(schedule, 200, windowId));
 }
 
 async function init() {
@@ -241,10 +241,9 @@ chrome.tabs.onCreated.addListener((tab) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (
-    changeInfo.url !== undefined ||
-    changeInfo.pinned !== undefined ||
-    changeInfo.groupId !== undefined ||
-    changeInfo.splitViewId !== undefined
+    changeInfo.url ||
+    changeInfo.pinned === false ||
+    changeInfo.splitViewId === chrome.tabs.SPLIT_VIEW_ID_NONE
   ) {
     debounceSchedule(tab.windowId);
   }

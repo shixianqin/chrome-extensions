@@ -179,14 +179,14 @@ async function arrange(windowId, avoidCrossingActiveTab) {
 /**
  * @type {Map<number, { promise: Promise<void>, next?: () => Promise<void> }>}
  */
-const TASKS_BY_WINDOW = new Map();
+const TASK_BY_WINDOW = new Map();
 
 /**
  * @param {number} windowId
  * @param {boolean} [avoidCrossingActiveTab]
  */
 function schedule(windowId, avoidCrossingActiveTab) {
-  let task = TASKS_BY_WINDOW.get(windowId);
+  let task = TASK_BY_WINDOW.get(windowId);
 
   if (task) {
     task.next = () => schedule(windowId, avoidCrossingActiveTab);
@@ -194,14 +194,14 @@ function schedule(windowId, avoidCrossingActiveTab) {
     task = {
       promise: arrange(windowId, avoidCrossingActiveTab)
         .finally(() => {
-          TASKS_BY_WINDOW.delete(windowId);
+          TASK_BY_WINDOW.delete(windowId);
         })
         .then(() => {
           return task.next?.();
         }),
     };
 
-    TASKS_BY_WINDOW.set(windowId, task);
+    TASK_BY_WINDOW.set(windowId, task);
   }
 
   return task.promise;
@@ -219,7 +219,9 @@ chrome.runtime.onStartup.addListener(init);
 chrome.runtime.onInstalled.addListener(init);
 
 chrome.tabs.onCreated.addListener((tab) => {
-  schedule(tab.windowId);
+  if (tab.url) {
+    schedule(tab.windowId);
+  }
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
